@@ -1,0 +1,143 @@
+
+test -e .vinit && rm .vinit
+test -e .vtoken && rm .vtoken
+
+docker run -d \
+       -p 8400:8400 \
+       -p 8500:8500 \
+       -p 8600:53/udp \
+       --hostname consul \
+       --name consul \
+       progrium/consul -server -bootstrap -ui-dir /ui
+sleep 5
+docker run -d \
+      -p 8200:8200 \
+      --hostname vault \
+      --name vault \
+      --link consul:consul \
+      --volume $PWD/consul:/config \
+      sjourdan/vault server -config=/config/consul.hcl
+sleep 5
+
+export VAULT_ADDR="http://0.0.0.0:8200"
+export VAULT_TOKEN=test
+VAULT_INIT=$(vault init)
+KEY1=$(echo "${VAULT_INIT}" | grep 'Key 1 (hex)' | cut -d':' -f2 | sed 's/^[ ]*//g')
+KEY2=$(echo "${VAULT_INIT}" | grep 'Key 2 (hex)' | cut -d':' -f2 | sed 's/^[ ]*//g')
+KEY3=$(echo "${VAULT_INIT}" | grep 'Key 3 (hex)' | cut -d':' -f2 | sed 's/^[ ]*//g')
+ROOT_TOK=$(echo "${VAULT_INIT}" | grep 'Root Token' | cut -d':' -f2 | sed 's/^[ ]*//g')
+export VAULT_TOKEN=$ROOT_TOK
+V1=$(vault unseal $KEY1)
+V2=$(vault unseal $KEY2)
+V3=$(vault unseal $KEY3)
+vault status
+echo "$VAULT_INIT" > .vinit
+echo "$VAULT_TOKEN" > .vtoken
+
+test -e .j.key && rm j.key
+test -e .j.key.pub && rm j.key.pub
+
+ssh-keygen -t rsa -N "" -f .j.key
+
+export VAULT_ADDR="http://0.0.0.0:8200"
+export VAULT_TOKEN=$(cat .vtoken)
+
+vault write secret/jenkins/jenkins-ssh-private-key value=@.j.key
+rm .j.key
+vault write secret/jenkins/jenkins-ssh-public-key value=@.j.key.pub
+rm .j.key.pub
+
+ADMIN_PW=$(openssl rand -base64 32)
+echo -n "{\"value\":\"$ADMIN_PW\"}" | vault write secret/ldap/admin-password -
+echo -n "{\"value\":\"readonly\"}" | vault write secret/jenkins/ldap-password -
+
+LDAP=$(docker run -d \
+  -e LDAP_ORGANISATION="My Company" \
+  -e LDAP_DOMAIN="example.org" \
+  -e LDAP_ADMIN_PASSWORD="${ADMIN_PW:-foo}" \
+  -e LDAP_TLS=false \
+  -e LDAP_READONLY_USER=true \
+  -v $PWD/ldap/swarm.ldif:/container/service/slapd/assets/test/swarm.ldif \
+  --hostname ldap.example.org \
+  --name lldap \
+  osixia/openldap:1.1.6)
+
+sleep 5
+
+docker exec $LDAP ldapadd -x -D "cn=admin,dc=example,dc=org" -w $ADMIN_PW -f /container/service/slapd/assets/test/new-user.ldif -h ldap.example.org
+docker exec $LDAP ldapadd -x -D "cn=admin,dc=example,dc=org" -w $ADMIN_PW -f /container/service/slapd/assets/test/swarm.ldif -h ldap.example.org
+JENKINS_ADMIN_PW=$(openssl rand -base64 32)
+docker exec -t $LDAP ldappasswd -x -D "cn=admin,dc=example,dc=org" -w $ADMIN_PW -h ldap.example.org -s "$JENKINS_ADMIN_PW" "uid=billy,dc=example,dc=org"
+JENKINS_SWARM_PW=$(openssl rand -base64 32)
+docker exec -t $LDAP ldappasswd -x -D "cn=admin,dc=example,dc=org" -w $ADMIN_PW -h ldap.example.org -s "$JENKINS_SWARM_PW" "uid=swarm,dc=example,dc=org"
+echo -n "{\"value\":\"$JENKINS_SWARM_PW\"}" | vault write secret/jenkins/jenkins-swarm-api-key -
+
+docker rm -f -v jenkins
+pushd master
+  docker build -t jenkins .
+popd
+
+JENKINS=$(docker run -d \
+  -e HOST_IP=192.168.1.153 \
+  -e VAULT_ADDR="http://$(docker inspect -f '{{ .NetworkSettings.IPAddress }}' vault):8200" \
+  -e VAULT_TOKEN=$VAULT_TOKEN \
+  -e LDAP_ADDR="ldap.example.org:389" \
+  -e LDAP_ROOTDN="dc=example,dc=org" \
+  -e LDAP_MANAGERDN="cn=readonly,dc=example,dc=org" \
+  -e JENKINS_GIT_NAME="jenkins" \
+  -e JENKINS_GIT_EMAIL="jenkins@example.org" \
+  -e JENKINS_ADMIN_ADDR="billy@example.org" \
+  -e SMTP_HOST="smtp.example.org" \
+  -e JENKINS_REPLYTO_ADDR="Jenkins <noreply@example.org>" \
+  -e JENKINS_EMAIL_SUFFIX="example.org" \
+  -p 8080:8080 \
+  --hostname jenkins.example.org \
+  --link lldap:ldap.example.org \
+  --name jenkins \
+  jenkins run)
+pushd upload 2>&1 1>/dev/null
+  docker build -t="upload:latest" .
+popd 2>&1 1>/dev/null
+
+mkdir -p $PWD/apt
+
+UPLOAD=$(docker run -d \
+    --restart=always \
+    --name 'upload' \
+    -v $PWD/apt:/go/src/app/test \
+    upload:latest
+)
+
+RP=$(docker run -d \
+  --restart=always \
+  -v $PWD/rp:/etc/nginx/conf.d \
+  -v $PWD/apt:/jenkins/apt \
+  --link upload:upload \
+  --link jenkins:jenkins \
+  -p 80:80 \
+  --name 'rp' \
+  nginx:latest)
+
+pushd slave &>/dev/null
+  docker build -t slave .
+popd &>/dev/null
+
+sleep 10
+
+JENKINS_SLAVE_PASSWORD=$(vault read -field=value secret/jenkins/jenkins-swarm-api-key)
+SLAVE=$(docker run -d \
+  --restart=always \
+  -e JENKINS_MASTER_URL="http://jenkins:8080" \
+  -e JENKINS_SLAVE_USER="swarm" \
+  -e JENKINS_SLAVE_PASSWORD="$JENKINS_SLAVE_PASSWORD" \
+  -e JENKINS_SWARM_NAME="test-$(hostname -s)" \
+  -e JENKINS_SWARM_LABELS="centos6" \
+  -e JENKINS_SWARM_DESCRIPTION="$PROJECT centos6 host" \
+  -e JENKINS_SWARM_EXECUTORS=4 \
+  --link jenkins:jenkins \
+  --name slave \
+  slave:latest)
+
+echo "jenkins admin username: billy"
+echo "jenkins admin password: $JENKINS_ADMIN_PW"
+echo "jenkins swarm api key: $JENKINS_SLAVE_PASSWORD"

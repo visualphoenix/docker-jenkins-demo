@@ -1,0 +1,14 @@
+dn: uid=swarm,dc=example,dc=org
+uid: swarm
+cn: swarm
+sn: swarm
+objectClass: top
+objectClass: posixAccount
+objectClass: inetOrgPerson
+loginShell: /bin/bash
+homeDirectory: /jenkins
+uidNumber: 12321
+gidNumber: 12321
+userPassword: {SSHA}j3lBh1Seqe4rqF1+NuWmjhvtAni1JC5A
+mail: swarm@example.org
+gecos: Swarm User
