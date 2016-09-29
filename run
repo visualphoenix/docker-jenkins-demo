@@ -72,7 +72,7 @@ JENKINS_SWARM_PW=$(openssl rand -base64 32)
 docker exec -t $LDAP ldappasswd -x -D "cn=admin,dc=example,dc=org" -w $ADMIN_PW -h ldap.example.org -s "$JENKINS_SWARM_PW" "uid=swarm,dc=example,dc=org"
 echo -n "{\"value\":\"$JENKINS_SWARM_PW\"}" | vault write secret/jenkins/jenkins-swarm-api-key -
 
-docker rm -f -v jenkins
+docker rm -f -v jenkins || true
 pushd master
   docker build -t jenkins .
 popd
@@ -95,17 +95,13 @@ JENKINS=$(docker run -d \
   --link lldap:ldap.example.org \
   --name jenkins \
   jenkins run)
-pushd upload 2>&1 1>/dev/null
-  docker build -t="upload:latest" .
-popd 2>&1 1>/dev/null
 
 mkdir -p $PWD/apt
-
 UPLOAD=$(docker run -d \
     --restart=always \
     --name 'upload' \
-    -v $PWD/apt:/go/src/app/test \
-    upload:latest
+    -v $PWD/apt:/go/test \
+    visualphoenix/go-post-it:latest
 )
 
 RP=$(docker run -d \

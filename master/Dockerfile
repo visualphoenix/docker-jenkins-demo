@@ -1,4 +1,42 @@
-FROM visualphoenix/alpine-oracle-jdk:8u45-b14-1
+FROM openjdk:8-jdk-alpine
+
+RUN apk update \
+ && apk add --no-cache \
+    curl \
+    bind-tools \
+    bash \
+    unzip \
+    git \
+    ca-certificates \
+    dpkg \
+    gnupg \
+    openssl \
+    openssh-client \
+    ttf-dejavu \
+    coreutils \
+    libstdc++ \
+ && update-ca-certificates \
+ && rm -rf /var/cache/apk/* \
+ && mkdir -p /usr/share/jenkins/ref
+
+ENV GOSU_VERSION 1.9
+RUN set -x \
+ && dpkgArch="$(dpkg --print-architecture | awk -F- '{ print $NF }')" \
+ && wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch" \
+ && wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$dpkgArch.asc" \
+ && export GNUPGHOME="$(mktemp -d)" \
+ && gpg --keyserver ha.pool.sks-keyservers.net --recv-keys B42F6819007F00F88E364FD4036A9C25BF357DD4 \
+ && gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu \
+ && rm -r "$GNUPGHOME" /usr/local/bin/gosu.asc \
+ && chmod +x /usr/local/bin/gosu \
+ && gosu nobody true \
+ && true
+
+RUN TINI_VERSION=0.10.0 \
+ && TINI_SHA=7d00da20acc5c3eb21d959733917f6672b57dabb \
+ && wget https://github.com/krallin/tini/releases/download/v${TINI_VERSION}/tini-static -O /bin/tini \
+ && chmod +x /bin/tini \
+ && echo "$TINI_SHA  /bin/tini" | sha1sum -c -
 
 ARG JENKINS_VERSION
 ARG JENKINS_SHA
@@ -13,18 +51,10 @@ ENV JENKINS_SLAVE_AGENT_PORT ${JENKINS_SLAVE_AGENT_PORT:-50000}
 ENV COPY_REFERENCE_FILE_LOG $JENKINS_HOME/copy_reference_file.log
 
 VOLUME /jenkins
-
-RUN apk update && apk add curl bind-tools bash zip unzip \
- && mkdir -p /usr/share/jenkins/ref
+WORKDIR /jenkins
 
 RUN addgroup -g ${gid} ${group} \
  && adduser -h "$JENKINS_HOME" -u ${uid} -G ${group} -s /bin/sh -D ${user}
-
-RUN TINI_VERSION=0.10.0 \
- && TINI_SHA=7d00da20acc5c3eb21d959733917f6672b57dabb \
- && wget https://github.com/krallin/tini/releases/download/v${TINI_VERSION}/tini-static -O /bin/tini \
- && chmod +x /bin/tini \
- && echo "$TINI_SHA  /bin/tini" | sha1sum -c -
 
 RUN JENKINS_VERSION=${JENKINS_VERSION:-2.9} \
  && JENKINS_SHA=${JENKINS_SHA:-1fd02a942cca991577ee9727dd3d67470e45c031} \
@@ -39,16 +69,35 @@ COPY jenkins/jenkins-support /usr/local/bin/jenkins-support
 COPY jenkins/install-plugins.sh /usr/local/bin/install-plugins.sh
 
 ENV JENKINS_UC https://updates.jenkins.io
-RUN PATH=/usr/lib/jvm/java-8-oracle/bin:$PATH \
-    install-plugins.sh \
-    cas-plugin ssh-credentials mailer \
-    matrix-auth sonar email-ext git \
-    maven-plugin metrics credentials \
-    cloudbees-folder rebuild  workflow-aggregator \
-    ldap swarm
+RUN install-plugins.sh \
+    cas-plugin \
+    cloudbees-folder \
+    credentials \
+    cvs \
+    email-ext \
+    git \
+    github \
+    gradle \
+    grails \
+    groovy \
+    groovy-postbuild \
+    job-dsl \
+    ldap \
+    mailer \
+    matrix-auth \
+    maven-plugin \
+    metrics \
+    rebuild \
+    sonar \
+    ssh-credentials \
+    startup-trigger-plugin \
+    swarm \
+    workflow-aggregator \
+ && true
 
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 COPY init.groovy.d /usr/share/jenkins/ref/init.groovy.d
 COPY init.groovy.mixins /usr/share/jenkins/ref/init.groovy.mixins
+COPY init.dsl.d /usr/share/jenkins/ref/init.dsl.d
 
-ENTRYPOINT ["/docker-entrypoint.sh"]
+ENTRYPOINT ["/bin/tini", "--", "/docker-entrypoint.sh"]

@@ -7,9 +7,12 @@ export JENKINS_EXECUTORS=${JENKINS_EXECUTORS:-10}
 export JENKINS_QUIET_PERIOD=${JENKINS_QUIET_PERIOD:-0}
 export JENKINS_SLAVE_AGENT_PORT=${JENKINS_SLAVE_AGENT_PORT:-50000}
 
-find /usr/share/jenkins/ref -type f -exec sh -c ". /usr/local/bin/jenkins-support; copy_reference_file '{}'" \;
+find /usr/share/jenkins/ref -type f -exec bash -c ". /usr/local/bin/jenkins-support; copy_reference_file '{}'" \;
+find /usr/share/jenkins \( -not -user jenkins -a -not -type l \) -exec chown jenkins:jenkins '{}' \;
+find /jenkins \( -not -user jenkins -a -not -type l \) -exec chown jenkins:jenkins '{}' \;
 
-exec java $JAVA_OPTS \
+exec gosu jenkins:jenkins \
+	java $JAVA_OPTS \
         -XX:NativeMemoryTracking=summary \
         -Dorg.apache.commons.jelly.tags.fmt.timeZone=$TZ \
         -Duser.timezone=$TZ \

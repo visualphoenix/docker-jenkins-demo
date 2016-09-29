@@ -1,9 +1,6 @@
 [submodule "slave"]
 	path = slave
 	url = git@github.com:visualphoenix/jenkins-centos6-slave.git
-[submodule "upload"]
-	path = upload
-	url = git@github.com:visualphoenix/go-post-it.git
 [submodule "master/init.groovy.mixins"]
 	path = master/init.groovy.mixins
 	url = git@github.com:visualphoenix/jenkins-init-scripts.git
